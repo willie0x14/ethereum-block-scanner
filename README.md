@@ -1,12 +1,7 @@
 # Ethereum Block Scanner
 
-Minimal Ethereum Block Listener written in Go.
+A production-oriented block listener designed to replace unreliable polling workers.
 
-This project is a learning-focused implementation that combines:
-
-* Block Listener (ETH RPC / WS)
-* RESTful API (net/http or Gin)
-* Repository abstraction (Postgres planned)
 
 ---
 
