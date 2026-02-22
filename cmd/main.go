@@ -13,15 +13,19 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 
-
+    "github.com/willie0x14/ethereum-block-scanner/internal/eth"
 	"github.com/willie0x14/ethereum-block-scanner/internal/api"
 	"github.com/willie0x14/ethereum-block-scanner/internal/listener"
 	"github.com/willie0x14/ethereum-block-scanner/internal/repository"
 	"github.com/willie0x14/ethereum-block-scanner/internal/service"
+	"github.com/willie0x14/ethereum-block-scanner/internal/config"
+
 )
 
 
 func main() {
+
+	cfg := config.Load()
 
 	// load .env
 	err := godotenv.Load()
@@ -41,8 +45,12 @@ func main() {
 	// service
 	svc := service.NewListenerService(repo)
 
+	// eth client
+	rpcURL := os.Getenv("ETH_RPC_URL")
+    ethClient := eth.NewClient(rpcURL)
+
 	// listener
-	blockListener := listener.NewListener(svc)
+	blockListener := listener.NewListener(svc, ethClient, cfg.PollInterval)
 
 	wg.Add(1) // 多一個goroutine需要等待
 	go func() {
