@@ -49,6 +49,14 @@ func main() {
 	rpcURL := os.Getenv("ETH_RPC_URL")
     ethClient := eth.NewClient(rpcURL)
 
+	// initialize cursor to latest block to avoid backfilling from block 1 on startup
+	latestBlock, err := ethClient.BlockNumber(ctx)
+	if err != nil {
+		log.Fatalf("failed to get latest block number: %v", err)
+	}
+	repo.SetLastProcessedBlock(ctx, latestBlock)
+	log.Printf("Initialized last processed block to latest: %d", latestBlock)
+
 	// listener
 	blockListener := listener.NewListener(svc, ethClient, cfg.PollInterval)
 
