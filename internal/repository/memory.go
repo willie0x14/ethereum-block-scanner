@@ -9,7 +9,7 @@ import (
 
 type MemoryRepository struct {
 	mu                  sync.RWMutex
-	lastProcessedBlock  int64
+	lastProcessedBlock  uint64
 	events              []model.Event // 記憶體中的事件清單, v1先不用D
 }
 
@@ -19,7 +19,7 @@ func NewMemoryRepository() Repository {
 	}
 }
 
-func (m *MemoryRepository) GetLastProcessedBlock(ctx context.Context) int64 {
+func (m *MemoryRepository) GetLastProcessedBlock(ctx context.Context) uint64 {
 	// RLock()：讀鎖（可多人同時讀）
 	// Lock()：寫鎖（只能一個）
 	m.mu.RLock()
@@ -36,4 +36,12 @@ func (m *MemoryRepository) ListRecentEvents(ctx context.Context, limit int) []mo
 	}
 
 	return m.events[len(m.events)-limit:] // 回傳最後limit筆
+}
+
+
+func (m *MemoryRepository) SetLastProcessedBlock(ctx context.Context, block uint64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.lastProcessedBlock = block
 }
