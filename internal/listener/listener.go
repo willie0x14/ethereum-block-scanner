@@ -27,8 +27,6 @@ func NewListener(svc *service.ListenerService, client BlockClient, interval time
 }
 
 func (l *Listener) Start(ctx context.Context) {
-	var lastSeen uint64
-
 	log.Println("Listener started...")
 
     ticker := time.NewTicker(l.tickerInterval)
@@ -41,16 +39,19 @@ func (l *Listener) Start(ctx context.Context) {
 			return
 
 		case <-ticker.C:
-			blockNumber, err := l.client.BlockNumber(ctx)
+			latest, err := l.client.BlockNumber(ctx)
 			if err != nil {
 				log.Println("Failed to get block number:", err)
 				continue
 			}
 
-			if blockNumber != lastSeen {
-				log.Println("current block:", blockNumber)
-				lastSeen = blockNumber
+			cursor := l.svc.GetLastProcessedBlock(ctx)
+
+			for b := cursor + 1; b <= latest; b++ {
+				l.svc.ProcessBlock(ctx, b)
 			}
+
+
 		}
 	}
 }

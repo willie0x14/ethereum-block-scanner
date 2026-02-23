@@ -7,7 +7,9 @@ import (
 )
 
 type Repository interface {
-	GetLastProcessedBlock(ctx context.Context) int64
+	GetLastProcessedBlock(ctx context.Context) uint64
+	SetLastProcessedBlock(ctx context.Context, block uint64)
+
 	ListRecentEvents(ctx context.Context, limit int) []model.Event
 }
 
