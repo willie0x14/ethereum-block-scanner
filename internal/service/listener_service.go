@@ -2,13 +2,13 @@ package service
 
 import (
 	"context"
-	"time"
 	"log"
+	"time"
 
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/willie0x14/ethereum-block-scanner/internal/model"
 	"github.com/willie0x14/ethereum-block-scanner/internal/repository"
 )
-
 
 // struct tag, JSON encode 時欄位用這個名字     e.g. `json:"listener_running"`
 type Status struct {
@@ -51,3 +51,7 @@ func (s *ListenerService) GetLastProcessedBlock(ctx context.Context) uint64 {
 	return s.repo.GetLastProcessedBlock(ctx)
 }
 
+func (s *ListenerService) OnNewHead(ctx context.Context, header *types.Header) {
+	// 先只更新最後處理高度
+	s.repo.SetLastProcessedBlock(ctx, header.Number.Uint64())
+}

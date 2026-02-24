@@ -13,25 +13,22 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 
-    "github.com/willie0x14/ethereum-block-scanner/internal/eth"
 	"github.com/willie0x14/ethereum-block-scanner/internal/api"
+	"github.com/willie0x14/ethereum-block-scanner/internal/config"
+	"github.com/willie0x14/ethereum-block-scanner/internal/eth"
 	"github.com/willie0x14/ethereum-block-scanner/internal/listener"
 	"github.com/willie0x14/ethereum-block-scanner/internal/repository"
 	"github.com/willie0x14/ethereum-block-scanner/internal/service"
-	"github.com/willie0x14/ethereum-block-scanner/internal/config"
-
 )
 
 
 func main() {
 
-	cfg := config.Load()
-
 	// load .env
-	err := godotenv.Load()
-    if err != nil {
-        log.Println(".env not found, using system env")
-    }
+	if err := godotenv.Load(); err != nil {
+		log.Println(".env not found, using system env")
+	}
+	config.Load()
 
 	// root context
 	ctx, cancel := context.WithCancel(context.Background()) // 可以呼叫cancel通知所有ctx的goroutine結束
@@ -45,30 +42,45 @@ func main() {
 	// service
 	svc := service.NewListenerService(repo)
 
-	// eth client
-	rpcURL := os.Getenv("ETH_RPC_URL")
-    ethClient := eth.NewClient(rpcURL)
+	// // eth client
+	// rpcURL := os.Getenv("ETH_RPC_URL")
+    // ethClient := eth.NewClient(rpcURL)
+
+	// ===== WS client =====
+	wsURL := os.Getenv("ETH_WS_URL")
+	if wsURL == "" {
+		log.Fatal("ETH_WS_URL is empty (need wss://...)")
+	}
+
+	wsClient, err := eth.NewWSClient(wsURL)
+	if err != nil {
+		log.Fatalf("failed to dial ETH_WS_URL: %v", err)
+	}
+
 
 	// initialize cursor to latest block to avoid backfilling from block 1 on startup
-	latestBlock, err := ethClient.BlockNumber(ctx)
+	latestBlock, err := wsClient.BlockNumber(ctx)
 	if err != nil {
 		log.Fatalf("failed to get latest block number: %v", err)
 	}
 	repo.SetLastProcessedBlock(ctx, latestBlock)
 	log.Printf("Initialized last processed block to latest: %d", latestBlock)
 
-	// listener
-	blockListener := listener.NewListener(svc, ethClient, cfg.PollInterval)
+	// ===== WS listener =====
+	wsListener := listener.NewWSListener(svc, wsClient)
 
 	wg.Add(1) // 多一個goroutine需要等待
 	go func() {
 		defer wg.Done()
-		blockListener.Start(ctx) // start listener loop
+		// blockListener.Start(ctx) // start listener loop
+		if err := wsListener.Start(ctx); err != nil {
+			log.Println("WS listener stopped with error:", err)
+			cancel()
+		}
 	}()
 
 	// ===== Gin router =====
 	gin.SetMode(gin.ReleaseMode)
-
 	handler := api.NewHandler(svc)
 	router := handler.Router() // Router() 要回傳 *gin.Engine
 
