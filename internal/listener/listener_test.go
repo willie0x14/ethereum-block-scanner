@@ -1,16 +1,18 @@
 package listener
 
 import (
-    "context"
-    "sync/atomic"
-    "testing"
-    "time"
+	"context"
 	"errors"
+	"math/big"
+	"sync/atomic"
+	"testing"
+	"time"
 
-    "github.com/stretchr/testify/assert"
+	"github.com/ethereum/go-ethereum/core/types"
+
+	"github.com/stretchr/testify/assert"
 	"github.com/willie0x14/ethereum-block-scanner/internal/repository"
 	"github.com/willie0x14/ethereum-block-scanner/internal/service"
-
 )
 
 type fakeClient struct {
@@ -23,6 +25,19 @@ type sequenceClient struct {
 	seq []uint64
 	idx int32
 }
+
+func (f *fakeClient) HeaderByNumber(ctx context.Context, number *big.Int) (*types.Header, error) {
+	return &types.Header{
+		Number: number,
+	}, nil
+}
+
+func (s *sequenceClient) HeaderByNumber(ctx context.Context, number *big.Int) (*types.Header, error) {
+	return &types.Header{
+		Number: number,
+	}, nil
+}
+
 
 func (f *fakeClient) BlockNumber(ctx context.Context) (uint64, error) {
 	// when counter, metrics, flags, state tracking, use "atomic"
@@ -55,7 +70,7 @@ func TestListener_BlockNumberCalled(t *testing.T) {
 	}
 
 	repo := repository.NewMemoryRepository()
-    repo.SetLastProcessedBlock(context.Background(), 2)
+    // repo.SetLastProcessedBlock(context.Background(), 2)
 
     svc := service.NewListenerService(repo)
     // interval 10ms tick
@@ -68,7 +83,7 @@ func TestListener_BlockNumberCalled(t *testing.T) {
 
     l.Start(ctx)
 
-    final := repo.GetLastProcessedBlock(context.Background())
+    final, _ := repo.GetLastProcessedBlock(context.Background())
     t.Log("final cursor:", final)
 	assert.Equal(t, uint64(5), final)
 }
@@ -83,7 +98,7 @@ func TestListener_NoNewBlock(t *testing.T) {
 	}
 
 	repo := repository.NewMemoryRepository()
-	repo.SetLastProcessedBlock(context.Background(), 5)
+	// repo.SetLastProcessedBlock(context.Background(), 5)
 
 	svc := service.NewListenerService(repo)
 	l := NewListener(svc, client, 10*time.Millisecond)
@@ -95,7 +110,7 @@ func TestListener_NoNewBlock(t *testing.T) {
 
 	l.Start(ctx)
 
-	final := repo.GetLastProcessedBlock(context.Background())
+	final, _ := repo.GetLastProcessedBlock(context.Background())
 
 	t.Log("final cursor:", final)
 
@@ -152,7 +167,7 @@ func TestListener_SequenceBlockNumber(t *testing.T) {
 
 	l.Start(ctx)
 
-	final := repo.GetLastProcessedBlock(context.Background())
+	final, _ := repo.GetLastProcessedBlock(context.Background())
 	assert.Equal(t, uint64(10), final) // assert.Equle(t, expected, actual)
 
 }

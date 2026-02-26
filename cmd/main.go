@@ -63,7 +63,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to get latest block number: %v", err)
 	}
-	repo.SetLastProcessedBlock(ctx, latestBlock)
+	_ = svc.MarkProcessed(ctx, latestBlock, "")
 	log.Printf("Initialized last processed block to latest: %d", latestBlock)
 
 	// ===== WS listener =====
