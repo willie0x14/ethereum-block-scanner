@@ -3,7 +3,10 @@ package listener
 import (
 	"context"
 	"log"
+	"math/big"
+	"time"
 
+	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
 
@@ -22,38 +25,101 @@ func NewWSListener(svc *service.ListenerService, client *ethclient.Client) *WSLi
 	}
 }
 
-func (l *WSListener) Start(ctx context.Context) error {
-	headers := make(chan *types.Header)
+func (l *WSListener) listenLoop(
+	ctx context.Context,
+	sub ethereum.Subscription,
+	headers chan *types.Header,
+) error {
 
-	sub, err := l.client.SubscribeNewHead(ctx, headers)
-	if err != nil {
-		return err
-	}
-
-	log.Println("subscribed to newHeads (WS)")
-
+	const confirmationDepth = uint64(5)
 	for {
 		select {
+
 		case <-ctx.Done():
-			log.Println("WS listener context cancelled")
 			return nil
 
 		case err := <-sub.Err():
-			// WS 斷線、節點問題、訂閱失效等都會來這
 			return err
 
 		case header := <-headers:
-			// 先做到 MVP：收到新區塊就印出來
-			log.Printf("new block → number=%d hash=%s parent=%s",
-				header.Number.Uint64(),
-				header.Hash().Hex(),
-				header.ParentHash.Hex(),
-			)
+            currHead := header.Number.Uint64()
+			if currHead <= confirmationDepth {
+				log.Println("Waiting for enough confirmations...")
+				continue
+			}
 
-			// 你後面 B 階段要做的事：丟給 service 處理
-			// 這裡我先用「最保守」的方式：只把新高度交給 service
-			// 你可以在 svc 裡面做去重、確認數、reorg 等
-			l.svc.OnNewHead(ctx, header)
+			safeBlock := currHead - confirmationDepth
+
+			last, err := l.svc.GetLastProcessedBlock(ctx)
+			if err != nil {
+				log.Printf("Get last processed failed: %v", err)
+				continue
+			}
+
+			// 如果還沒到 safeBlock 就不用處理
+			if safeBlock <= last {
+				continue
+			}
+
+			log.Printf("Processing finalized blocks up to %d", safeBlock)
+
+			// 補齊 gap + finalized
+			for h := last + 1; h <= safeBlock; h++ {
+
+				finalizedHeader, err := l.client.HeaderByNumber(
+					ctx,
+					big.NewInt(int64(h)),
+				)
+				if err != nil {
+					log.Printf("Fetch header failed at %d: %v", h, err)
+					break
+				}
+
+				log.Printf("Finalized block → number=%d hash=%s parent=%s",
+					h,
+					finalizedHeader.Hash().Hex(),
+					finalizedHeader.ParentHash.Hex(),
+				)
+
+				// 直接標記 finalized
+				_ = l.svc.MarkProcessed(ctx, h, finalizedHeader.Hash().Hex())
+			}
 		}
 	}
+}
+
+func (l *WSListener) Start(ctx context.Context) error {
+    for {
+		select {
+		case <-ctx.Done():
+			log.Println("WS listener shutting down")
+			return nil
+		default: // doNothing
+		}
+
+		log.Println("Connecting to WS...")
+
+		headers := make(chan *types.Header)
+
+		sub, err := l.client.SubscribeNewHead(ctx, headers)
+		if err != nil {
+			log.Printf("Subscribe failed: %v", err)
+			time.Sleep(3 * time.Second)
+			continue
+		}
+
+		log.Println("Subscribed to newHeads (WS)")
+
+		// inner loop
+		err = l.listenLoop(ctx, sub, headers)
+
+		// 會到這邊一定是有error或者nil回傳
+		sub.Unsubscribe()
+
+		log.Printf("Subscription ended: %v", err)
+		log.Println("Reconnecting in 3 seconds...")
+
+		time.Sleep(3 * time.Second)
+	}
+
 }

@@ -7,9 +7,9 @@ import (
 )
 
 type Repository interface {
-	GetLastProcessedBlock(ctx context.Context) uint64
-	SetLastProcessedBlock(ctx context.Context, block uint64)
-
+	GetLastProcessedBlock(ctx context.Context) (uint64, error)
+	GetLastBlockHash(ctx context.Context) (string, error)
+	SetProcessed(ctx context.Context, block uint64, hash string)
 	ListRecentEvents(ctx context.Context, limit int) []model.Event
 }
 

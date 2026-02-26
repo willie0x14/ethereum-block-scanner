@@ -5,7 +5,6 @@ import (
 	"log"
 	"time"
 
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/willie0x14/ethereum-block-scanner/internal/model"
 	"github.com/willie0x14/ethereum-block-scanner/internal/repository"
 )
@@ -29,9 +28,13 @@ func NewListenerService(repo repository.Repository) *ListenerService {
 }
 
 func (s *ListenerService) GetStatus(ctx context.Context) Status {
+	last, err := s.repo.GetLastProcessedBlock(ctx)
+    if err != nil {
+        log.Println("failed to get last processed:", err)
+    }
 	return Status{
 		ListenerRunning:    true, // TODO
-		LastProcessedBlock: s.repo.GetLastProcessedBlock(ctx),
+		LastProcessedBlock: last,
 		UpdatedAt:          time.Now().Unix(),
 	}
 }
@@ -40,18 +43,22 @@ func (s *ListenerService) ListRecentEvents(ctx context.Context, limit int) []mod
 	return s.repo.ListRecentEvents(ctx, limit)
 }
 
-func (s *ListenerService) ProcessBlock(ctx context.Context, block uint64) {
+func (s *ListenerService) ProcessBlock(ctx context.Context, block uint64, hash string) {
 	log.Println("processing block:", block)
 
-	s.repo.SetLastProcessedBlock(ctx, block)
+	s.repo.SetProcessed(ctx, block, hash)
 }
 
 
-func (s *ListenerService) GetLastProcessedBlock(ctx context.Context) uint64 {
+func (s *ListenerService) GetLastProcessedBlock(ctx context.Context) (uint64, error) {
 	return s.repo.GetLastProcessedBlock(ctx)
 }
 
-func (s *ListenerService) OnNewHead(ctx context.Context, header *types.Header) {
-	// 先只更新最後處理高度
-	s.repo.SetLastProcessedBlock(ctx, header.Number.Uint64())
+func (s *ListenerService) MarkProcessed(ctx context.Context, height uint64, hash string) error {
+	s.repo.SetProcessed(ctx, height, hash)
+	return nil
+}
+
+func (s *ListenerService) GetLastBlockHash(ctx context.Context) (string, error) {
+	return s.repo.GetLastBlockHash(ctx)
 }

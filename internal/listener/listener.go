@@ -3,13 +3,17 @@ package listener
 import (
 	"context"
 	"log"
+	"math/big"
 	"time"
 
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/willie0x14/ethereum-block-scanner/internal/service"
 )
 
 type BlockClient interface {
 	BlockNumber(ctx context.Context) (uint64, error)
+	HeaderByNumber(ctx context.Context, number *big.Int) (*types.Header, error)
+
 }
 
 type Listener struct {
@@ -45,10 +49,19 @@ func (l *Listener) Start(ctx context.Context) {
 				continue
 			}
 
-			cursor := l.svc.GetLastProcessedBlock(ctx)
+			cursor, err:= l.svc.GetLastProcessedBlock(ctx)
+			if err != nil {
+				log.Println("Failed to get last processed block:", err)
+				continue
+			}
 
 			for b := cursor + 1; b <= latest; b++ {
-				l.svc.ProcessBlock(ctx, b)
+				hdr, err := l.client.HeaderByNumber(ctx, big.NewInt(int64(b)))
+				if err != nil {
+					log.Println("failed to get header:", err)
+					break
+				}
+				l.svc.ProcessBlock(ctx, b, hdr.Hash().Hex())
 			}
 
 

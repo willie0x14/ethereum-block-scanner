@@ -10,6 +10,7 @@ import (
 type MemoryRepository struct {
 	mu                  sync.RWMutex
 	lastProcessedBlock  uint64
+	lastBlockHash       string
 	events              []model.Event // 記憶體中的事件清單, v1先不用D
 }
 
@@ -19,12 +20,18 @@ func NewMemoryRepository() Repository {
 	}
 }
 
-func (m *MemoryRepository) GetLastProcessedBlock(ctx context.Context) uint64 {
+func (m *MemoryRepository) GetLastBlockHash(ctx context.Context) (string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.lastBlockHash, nil
+}
+
+func (m *MemoryRepository) GetLastProcessedBlock(ctx context.Context) (uint64, error) {
 	// RLock()：讀鎖（可多人同時讀）
 	// Lock()：寫鎖（只能一個）
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.lastProcessedBlock
+	return m.lastProcessedBlock, nil
 }
 
 func (m *MemoryRepository) ListRecentEvents(ctx context.Context, limit int) []model.Event {
@@ -39,9 +46,16 @@ func (m *MemoryRepository) ListRecentEvents(ctx context.Context, limit int) []mo
 }
 
 
-func (m *MemoryRepository) SetLastProcessedBlock(ctx context.Context, block uint64) {
+// func (m *MemoryRepository) SetLastProcessedBlock(ctx context.Context, block uint64) {
+// 	m.mu.Lock()
+// 	defer m.mu.Unlock()
+
+// 	m.lastProcessedBlock = block
+// }
+
+func (m *MemoryRepository) SetProcessed(ctx context.Context, block uint64, hash string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
 	m.lastProcessedBlock = block
+	m.lastBlockHash = hash
 }
