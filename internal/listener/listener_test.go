@@ -3,171 +3,234 @@ package listener
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/big"
-	"sync/atomic"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/core/types"
-
 	"github.com/stretchr/testify/assert"
 	"github.com/willie0x14/ethereum-block-scanner/internal/repository"
 	"github.com/willie0x14/ethereum-block-scanner/internal/service"
 )
 
-type fakeClient struct {
-	fail bool
-	latest uint64
-    calls int32
+type fakeSubscription struct {
+	errCh chan error
+	once  sync.Once
 }
 
-type sequenceClient struct {
-	seq []uint64
-	idx int32
+func newFakeSubscription() *fakeSubscription {
+	return &fakeSubscription{errCh: make(chan error, 1)}
 }
 
-func (f *fakeClient) HeaderByNumber(ctx context.Context, number *big.Int) (*types.Header, error) {
-	return &types.Header{
-		Number: number,
-	}, nil
+func (s *fakeSubscription) Err() <-chan error {
+	return s.errCh
 }
 
-func (s *sequenceClient) HeaderByNumber(ctx context.Context, number *big.Int) (*types.Header, error) {
-	return &types.Header{
-		Number: number,
-	}, nil
+func (s *fakeSubscription) Unsubscribe() {
+	s.once.Do(func() {
+		close(s.errCh)
+	})
 }
 
+type fakeWSClient struct {
+	mu             sync.Mutex
+	subscriptions  []ethereum.Subscription
+	headersCh      chan<- *types.Header
+	subscribeCalls int
+	finalizedHead  uint64
+	hashes         map[uint64]string
+}
 
-func (f *fakeClient) BlockNumber(ctx context.Context) (uint64, error) {
-	// when counter, metrics, flags, state tracking, use "atomic"
-    atomic.AddInt32(&f.calls, 1) // use lock-free,
+func newFakeWSClient(subs ...ethereum.Subscription) *fakeWSClient {
+	return &fakeWSClient{
+		subscriptions: subs,
+		hashes:        make(map[uint64]string),
+	}
+}
 
-	if f.fail {
-		f.fail = false
-		return 0, errors.New("rpc error")
+func (f *fakeWSClient) SubscribeNewHead(ctx context.Context, ch chan<- *types.Header) (ethereum.Subscription, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.headersCh = ch
+	f.subscribeCalls++
+
+	if len(f.subscriptions) == 0 {
+		return nil, errors.New("no fake subscription")
 	}
 
-    return f.latest, nil
-}
-
-func (s *sequenceClient) BlockNumber(ctx context.Context) (uint64, error) {
-	i := atomic.AddInt32(&s.idx, 1) - 1 // get current index
-
-	if int(i) >= len(s.seq) {
-		return s.seq[len(s.seq)-1], nil // return last one
+	idx := f.subscribeCalls - 1
+	if idx >= len(f.subscriptions) {
+		idx = len(f.subscriptions) - 1
 	}
 
-	return s.seq[i], nil
+	return f.subscriptions[idx], nil
 }
 
-func TestListener_BlockNumberCalled(t *testing.T) {
-    ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+func (f *fakeWSClient) GetFinalizedHead(ctx context.Context) (uint64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.finalizedHead, nil
+}
 
-    client := &fakeClient{
-		latest: 5,
+func (f *fakeWSClient) GetBlockHash(ctx context.Context, number uint64) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if hash, ok := f.hashes[number]; ok {
+		return hash, nil
 	}
 
-	repo := repository.NewMemoryRepository()
-    // repo.SetLastProcessedBlock(context.Background(), 2)
-
-    svc := service.NewListenerService(repo)
-    // interval 10ms tick
-    l := NewListener(svc, client, 10*time.Millisecond)
-
-    go func() {
-        time.Sleep(50 * time.Millisecond) // after 50ms cancel
-        cancel()
-    }()
-
-    l.Start(ctx)
-
-    final, _ := repo.GetLastProcessedBlock(context.Background())
-    t.Log("final cursor:", final)
-	assert.Equal(t, uint64(5), final)
+	hash := fmt.Sprintf("0x%064x", number+1)
+	f.hashes[number] = hash
+	return hash, nil
 }
 
+func (f *fakeWSClient) pushHead(ctx context.Context, number uint64) {
+	f.pushHeadWithFinalized(ctx, number, number)
+}
 
-func TestListener_NoNewBlock(t *testing.T) {
+func (f *fakeWSClient) pushHeadWithFinalized(ctx context.Context, number uint64, finalized uint64) {
+	f.mu.Lock()
+	ch := f.headersCh
+	f.finalizedHead = finalized
+	f.mu.Unlock()
+
+	if ch != nil {
+		ch <- &types.Header{Number: new(big.Int).SetUint64(number)}
+	}
+}
+
+func (f *fakeWSClient) subscribeCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.subscribeCalls
+}
+
+func waitUntil(t *testing.T, timeout time.Duration, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timeout waiting for condition")
+}
+
+func TestWSListenerStart_ProcessesFinalizedBlocks(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	client := &fakeClient{
-		latest: 5,
-	}
-
 	repo := repository.NewMemoryRepository()
-	// repo.SetLastProcessedBlock(context.Background(), 5)
-
 	svc := service.NewListenerService(repo)
-	l := NewListener(svc, client, 10*time.Millisecond)
 
+	sub := newFakeSubscription()
+	client := newFakeWSClient(sub)
+	listener := NewWSListener(svc, client)
+	listener.reconnectDelay = 10 * time.Millisecond
+
+	done := make(chan error, 1)
 	go func() {
-		time.Sleep(50 * time.Millisecond)
-		cancel()
+		done <- listener.Start(ctx)
 	}()
 
-	l.Start(ctx)
+	waitUntil(t, time.Second, func() bool {
+		return client.subscribeCallCount() >= 1
+	})
 
-	final, _ := repo.GetLastProcessedBlock(context.Background())
+	client.pushHead(ctx, 8)
 
-	t.Log("final cursor:", final)
+	waitUntil(t, time.Second, func() bool {
+		last, _ := repo.GetLastProcessedBlock(context.Background())
+		return last == 8
+	})
 
-	assert.Equal(t, uint64(5), final)
+	cancel()
+
+	select {
+	case err := <-done:
+		assert.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("listener did not stop after context cancellation")
+	}
 }
 
-
-func TestListener_RetryOnRPCError(t *testing.T) {
+func TestWSListenerStart_SkipsWhenNoFinalizedProgress(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	client := &fakeClient{
-		latest: 10,
-		fail: true,
-	}
-
 	repo := repository.NewMemoryRepository()
-
 	svc := service.NewListenerService(repo)
-	l := NewListener(svc, client, 10*time.Millisecond)
 
+	sub := newFakeSubscription()
+	client := newFakeWSClient(sub)
+	listener := NewWSListener(svc, client)
+	listener.reconnectDelay = 10 * time.Millisecond
+
+	done := make(chan error, 1)
 	go func() {
-		time.Sleep(50 * time.Millisecond)
-		cancel()
+		done <- listener.Start(ctx)
 	}()
 
-	l.Start(ctx)
+	waitUntil(t, time.Second, func() bool {
+		return client.subscribeCallCount() >= 1
+	})
 
-	calls := atomic.LoadInt32(&client.calls)
+	client.pushHeadWithFinalized(ctx, 5, 0)
+	time.Sleep(50 * time.Millisecond)
 
-	t.Log("rpc calls:", calls)
+	last, _ := repo.GetLastProcessedBlock(context.Background())
+	assert.Equal(t, uint64(0), last)
 
-	assert.Greater(t, calls, int32(1))
+	cancel()
+
+	select {
+	case err := <-done:
+		assert.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("listener did not stop after context cancellation")
+	}
 }
 
-
-func TestListener_SequenceBlockNumber(t *testing.T) {
-    ctx, cancel := context.WithCancel(context.Background())
+func TestWSListenerStart_ReconnectsAfterSubscriptionError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	client := &sequenceClient{
-		seq: []uint64{10, 9, 10},
-		idx: 0,
-	}
-
 	repo := repository.NewMemoryRepository()
-	svc := service.NewListenerService(repo) // DI
-	l := NewListener(svc, client, 10*time.Millisecond)
+	svc := service.NewListenerService(repo)
 
+	sub1 := newFakeSubscription()
+	sub2 := newFakeSubscription()
+	client := newFakeWSClient(sub1, sub2)
+	listener := NewWSListener(svc, client)
+	listener.reconnectDelay = 10 * time.Millisecond
+
+	done := make(chan error, 1)
 	go func() {
-		time.Sleep(50 * time.Millisecond)
-		cancel()
+		done <- listener.Start(ctx)
 	}()
 
-	l.Start(ctx)
+	waitUntil(t, time.Second, func() bool {
+		return client.subscribeCallCount() >= 1
+	})
 
-	final, _ := repo.GetLastProcessedBlock(context.Background())
-	assert.Equal(t, uint64(10), final) // assert.Equle(t, expected, actual)
+	sub1.errCh <- errors.New("ws dropped")
 
+	waitUntil(t, time.Second, func() bool {
+		return client.subscribeCallCount() >= 2
+	})
+
+	cancel()
+
+	select {
+	case err := <-done:
+		assert.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("listener did not stop after context cancellation")
+	}
 }

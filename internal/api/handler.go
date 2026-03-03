@@ -1,6 +1,5 @@
 package api
 
-
 import (
 	"net/http"
 	"strconv"
@@ -8,7 +7,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/willie0x14/ethereum-block-scanner/internal/service"
 )
-
 
 type Handler struct {
 	svc *service.ListenerService
@@ -31,14 +29,8 @@ func (h *Handler) Router() *gin.Engine {
 		v1.GET("/events", h.handleEvents)
 	}
 
-	// v2 := r.Group("/api/v2")
-	// {
-	// 	v2.GET("/status", h.handleStatusV2)
-	// }
-
 	return r
 }
-
 
 // GET /health
 func (h *Handler) handleHealth(c *gin.Context) {

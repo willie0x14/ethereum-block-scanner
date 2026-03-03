@@ -3,25 +3,31 @@ package listener
 import (
 	"context"
 	"log"
-	"math/big"
 	"time"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/ethclient"
 
 	"github.com/willie0x14/ethereum-block-scanner/internal/service"
 )
 
-type WSListener struct {
-	svc    *service.ListenerService
-	client *ethclient.Client
+type WSBlockClient interface {
+	SubscribeNewHead(ctx context.Context, ch chan<- *types.Header) (ethereum.Subscription, error)
+	GetFinalizedHead(ctx context.Context) (uint64, error)
+	GetBlockHash(ctx context.Context, number uint64) (string, error)
 }
 
-func NewWSListener(svc *service.ListenerService, client *ethclient.Client) *WSListener {
+type WSListener struct {
+	svc            *service.ListenerService
+	client         WSBlockClient
+	reconnectDelay time.Duration
+}
+
+func NewWSListener(svc *service.ListenerService, client WSBlockClient) *WSListener {
 	return &WSListener{
-		svc:    svc,
-		client: client,
+		svc:            svc,
+		client:         client,
+		reconnectDelay: 3 * time.Second,
 	}
 }
 
@@ -31,7 +37,6 @@ func (l *WSListener) listenLoop(
 	headers chan *types.Header,
 ) error {
 
-	const confirmationDepth = uint64(5)
 	for {
 		select {
 
@@ -41,55 +46,16 @@ func (l *WSListener) listenLoop(
 		case err := <-sub.Err():
 			return err
 
-		case header := <-headers:
-            currHead := header.Number.Uint64()
-			if currHead <= confirmationDepth {
-				log.Println("Waiting for enough confirmations...")
-				continue
-			}
-
-			safeBlock := currHead - confirmationDepth
-
-			last, err := l.svc.GetLastProcessedBlock(ctx)
-			if err != nil {
-				log.Printf("Get last processed failed: %v", err)
-				continue
-			}
-
-			// 如果還沒到 safeBlock 就不用處理
-			if safeBlock <= last {
-				continue
-			}
-
-			log.Printf("Processing finalized blocks up to %d", safeBlock)
-
-			// 補齊 gap + finalized
-			for h := last + 1; h <= safeBlock; h++ {
-
-				finalizedHeader, err := l.client.HeaderByNumber(
-					ctx,
-					big.NewInt(int64(h)),
-				)
-				if err != nil {
-					log.Printf("Fetch header failed at %d: %v", h, err)
-					break
-				}
-
-				log.Printf("Finalized block → number=%d hash=%s parent=%s",
-					h,
-					finalizedHeader.Hash().Hex(),
-					finalizedHeader.ParentHash.Hex(),
-				)
-
-				// 直接標記 finalized
-				_ = l.svc.MarkProcessed(ctx, h, finalizedHeader.Hash().Hex())
+		case <-headers:
+			if err := l.svc.SyncFinalized(ctx, l.client.GetFinalizedHead, l.client.GetBlockHash); err != nil {
+				log.Printf("Sync finalized failed: %v", err)
 			}
 		}
 	}
 }
 
 func (l *WSListener) Start(ctx context.Context) error {
-    for {
+	for {
 		select {
 		case <-ctx.Done():
 			log.Println("WS listener shutting down")
@@ -104,7 +70,10 @@ func (l *WSListener) Start(ctx context.Context) error {
 		sub, err := l.client.SubscribeNewHead(ctx, headers)
 		if err != nil {
 			log.Printf("Subscribe failed: %v", err)
-			time.Sleep(3 * time.Second)
+			if ctx.Err() != nil {
+				return nil
+			}
+			time.Sleep(l.reconnectDelay)
 			continue
 		}
 
@@ -116,10 +85,15 @@ func (l *WSListener) Start(ctx context.Context) error {
 		// 會到這邊一定是有error或者nil回傳
 		sub.Unsubscribe()
 
-		log.Printf("Subscription ended: %v", err)
-		log.Println("Reconnecting in 3 seconds...")
+		if ctx.Err() != nil {
+			log.Println("WS listener shutting down")
+			return nil
+		}
 
-		time.Sleep(3 * time.Second)
+		log.Printf("Subscription ended: %v", err)
+		log.Printf("Reconnecting in %s...", l.reconnectDelay)
+
+		time.Sleep(l.reconnectDelay)
 	}
 
 }
