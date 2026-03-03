@@ -1,0 +1,15 @@
+# local home mirrors / caches (never commit)
+.home/
+
+# Go caches / modules cache
+.cache/
+**/go-build/
+**/pkg/mod/
+**/pkg/mod/cache/
+**/.cache/
+
+# staticcheck cache
+**/staticcheck/
+
+# env
+.env

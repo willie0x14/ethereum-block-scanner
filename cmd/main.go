@@ -21,7 +21,6 @@ import (
 	"github.com/willie0x14/ethereum-block-scanner/internal/service"
 )
 
-
 func main() {
 
 	// load .env
@@ -36,15 +35,18 @@ func main() {
 
 	var wg sync.WaitGroup // 等待啟動的goroutine做完再退出
 
-	// repository
-	repo := repository.NewMemoryRepository()
+	// ===== PostgreSQL =====
+	dbURL := os.Getenv("DB_URL")
+	if dbURL == "" {
+		log.Fatal("DB_URL not set")
+	}
 
-	// service
+	repo, err := repository.NewPostgresRepository(ctx, dbURL)
+	if err != nil {
+		log.Fatalf("failed to connect db: %v", err)
+	}
+
 	svc := service.NewListenerService(repo)
-
-	// // eth client
-	// rpcURL := os.Getenv("ETH_RPC_URL")
-    // ethClient := eth.NewClient(rpcURL)
 
 	// ===== WS client =====
 	wsURL := os.Getenv("ETH_WS_URL")
@@ -57,22 +59,12 @@ func main() {
 		log.Fatalf("failed to dial ETH_WS_URL: %v", err)
 	}
 
-
-	// initialize cursor to latest block to avoid backfilling from block 1 on startup
-	latestBlock, err := wsClient.BlockNumber(ctx)
-	if err != nil {
-		log.Fatalf("failed to get latest block number: %v", err)
-	}
-	_ = svc.MarkProcessed(ctx, latestBlock, "")
-	log.Printf("Initialized last processed block to latest: %d", latestBlock)
-
 	// ===== WS listener =====
 	wsListener := listener.NewWSListener(svc, wsClient)
 
 	wg.Add(1) // 多一個goroutine需要等待
 	go func() {
 		defer wg.Done()
-		// blockListener.Start(ctx) // start listener loop
 		if err := wsListener.Start(ctx); err != nil {
 			log.Println("WS listener stopped with error:", err)
 			cancel()
@@ -97,7 +89,7 @@ func main() {
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed { // 阻塞式
 			log.Fatal(err)
 		}
- 	}()
+	}()
 
 	// graceful shutdown
 	sigChan := make(chan os.Signal, 1)
